@@ -1,0 +1,89 @@
+class MemoryBlock:
+    def __init__(self, size):
+        self.process_id = "Free"
+        self.size = size
+        self.next = None
+
+
+class MemoryAllocation:
+    def __init__(self):
+        self.head = None
+
+    def create_memory(self, sizes):
+        for size in sizes:
+            new_block = MemoryBlock(size)
+
+            if self.head is None:
+                self.head = new_block
+            else:
+                temp = self.head
+                while temp.next:
+                    temp = temp.next
+                temp.next = new_block
+
+    def allocate(self, process_id, required_size):
+        temp = self.head
+
+        while temp:
+            if temp.process_id == "Free" and temp.size >= required_size:
+                temp.process_id = process_id
+
+                print("Memory allocated successfully.")
+                print("Process:", process_id)
+                print("Allocated Size:", required_size)
+                return
+
+            temp = temp.next
+
+        print("Memory allocation failed.")
+        print("No suitable free block available.")
+
+    def deallocate(self, process_id):
+        temp = self.head
+
+        while temp:
+            if temp.process_id == process_id:
+                temp.process_id = "Free"
+                print("Memory released successfully.")
+                return
+
+            temp = temp.next
+
+        print("Process not found.")
+
+    def display(self):
+        temp = self.head
+
+        print("\nMemory Blocks:")
+        while temp:
+            print(
+                "[", temp.process_id,
+                "|", temp.size, "MB ]",
+                end=" -> "
+            )
+            temp = temp.next
+
+        print("None")
+
+
+# Main program
+memory = MemoryAllocation()
+
+# Create memory blocks
+memory.create_memory([20, 30, 25, 25])
+
+print("Initial Memory:")
+memory.display()
+
+# Allocate memory
+memory.allocate("P1", 20)
+memory.allocate("P2", 25)
+
+print("\nAfter Allocation:")
+memory.display()
+
+# Release memory
+memory.deallocate("P1")
+
+print("\nAfter Deallocation:")
+memory.display()
