@@ -1,0 +1,285 @@
+from dataclasses import dataclass, replace
+
+import streamlit as st
+
+TOTAL_MEMORY = 640_000
+BASE_ADDRESS = 1_000
+HEADER_BYTES = 24
+SLIDER_MAX = 4_096
+MAX_REQUEST = TOTAL_MEMORY - HEADER_BYTES
+STRATEGIES = ("First Fit", "Best Fit", "Worst Fit")
+
+
+@dataclass
+class MemoryBlock:
+    block_id: int
+    start: int
+    size: int
+    free: bool = True
+    requested: int | None = None
+
+
+def format_bytes(value: int) -> str:
+    return f"{value:,}"
+
+
+def to_hex(address: int) -> str:
+    return f"0x{address:x}"
+
+
+def initialize_state() -> None:
+    defaults = {
+        "blocks": [
+            MemoryBlock(
+                block_id=1,
+                start=BASE_ADDRESS,
+                size=TOTAL_MEMORY,
+            )
+        ],
+        "next_id": 2,
+        "request_size": 64,
+        "size_slider": 64,
+        "strategy": STRATEGIES[0],
+        "message": "",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def on_slider_change() -> None:
+    st.session_state["request_size"] = st.session_state["size_slider"]
+    st.session_state["message"] = ""
+
+
+def on_number_change() -> None:
+    value = int(st.session_state["request_size"])
+    st.session_state["size_slider"] = min(max(value, 1), SLIDER_MAX)
+    st.session_state["message"] = ""
+
+
+def allocate_memory() -> None:
+    requested = int(st.session_state["request_size"])
+    strategy = st.session_state["strategy"]
+    required_size = requested + HEADER_BYTES
+    blocks: list[MemoryBlock] = st.session_state["blocks"]
+
+    candidates = [
+        (index, block)
+        for index, block in enumerate(blocks)
+        if block.free and block.size >= required_size
+    ]
+
+    if not candidates:
+        st.session_state["message"] = (
+            "No free block is large enough. Release a block or reset memory."
+        )
+        return
+
+    if strategy == "Best Fit":
+        index, block = min(candidates, key=lambda item: item[1].size)
+    elif strategy == "Worst Fit":
+        index, block = max(candidates, key=lambda item: item[1].size)
+    else:
+        index, block = candidates[0]
+
+    allocated = MemoryBlock(
+        block_id=st.session_state["next_id"],
+        start=block.start,
+        size=required_size,
+        free=False,
+        requested=requested,
+    )
+    remainder_size = block.size - required_size
+
+    updated_blocks = list(blocks)
+    updated_blocks[index : index + 1] = [allocated]
+
+    next_id = st.session_state["next_id"] + 1
+    if remainder_size:
+        updated_blocks.insert(
+            index + 1,
+            MemoryBlock(
+                block_id=next_id,
+                start=block.start + required_size,
+                size=remainder_size,
+            ),
+        )
+        next_id += 1
+
+    st.session_state["blocks"] = updated_blocks
+    st.session_state["next_id"] = next_id
+    st.session_state["message"] = (
+        f"{format_bytes(requested)} bytes allocated using {strategy}."
+    )
+
+
+def release_memory(block_id: int) -> None:
+    blocks: list[MemoryBlock] = st.session_state["blocks"]
+    released = [
+        replace(block, free=True, requested=None)
+        if block.block_id == block_id
+        else block
+        for block in blocks
+    ]
+
+    merged: list[MemoryBlock] = []
+    for block in released:
+        if merged and merged[-1].free and block.free:
+            previous = merged[-1]
+            merged[-1] = replace(previous, size=previous.size + block.size)
+        else:
+            merged.append(replace(block))
+
+    cursor = BASE_ADDRESS
+    for block in merged:
+        block.start = cursor
+        cursor += block.size
+
+    st.session_state["blocks"] = merged
+    st.session_state["message"] = (
+        "Block released and adjacent free space merged."
+    )
+
+
+def reset_memory() -> None:
+    st.session_state["blocks"] = [
+        MemoryBlock(block_id=1, start=BASE_ADDRESS, size=TOTAL_MEMORY)
+    ]
+    st.session_state["next_id"] = 2
+    st.session_state["request_size"] = 64
+    st.session_state["size_slider"] = 64
+    st.session_state["strategy"] = STRATEGIES[0]
+    st.session_state["message"] = "Memory has been reset."
+
+
+def render_controls() -> None:
+    with st.container(border=True):
+        st.subheader("Allocate Memory")
+
+        slider_col, number_col = st.columns([4, 1])
+        slider_col.slider(
+            "Size",
+            min_value=1,
+            max_value=SLIDER_MAX,
+            key="size_slider",
+            on_change=on_slider_change,
+        )
+        number_col.number_input(
+            "Bytes",
+            min_value=1,
+            max_value=MAX_REQUEST,
+            step=1,
+            key="request_size",
+            on_change=on_number_change,
+        )
+
+        st.radio(
+            "Strategy",
+            STRATEGIES,
+            horizontal=True,
+            key="strategy",
+        )
+
+        allocate_col, reset_col = st.columns([4, 1.5])
+        allocate_col.button(
+            "Allocate Memory",
+            type="primary",
+            use_container_width=True,
+            on_click=allocate_memory,
+            key="allocate_button",
+        )
+        reset_col.button(
+            "Reset",
+            use_container_width=True,
+            on_click=reset_memory,
+            key="reset_button",
+        )
+
+        if st.session_state["message"]:
+            st.info(st.session_state["message"])
+
+
+def render_statistics(blocks: list[MemoryBlock]) -> None:
+    used_bytes = sum(block.size for block in blocks if not block.free)
+    free_bytes = TOTAL_MEMORY - used_bytes
+    free_blocks = sum(block.free for block in blocks)
+    used_blocks = sum(not block.free for block in blocks)
+
+    with st.container(border=True):
+        st.subheader("Memory Statistics")
+
+        used_col, free_col = st.columns(2)
+        used_col.metric("Used Memory (bytes)", format_bytes(used_bytes))
+        free_col.metric("Free Memory (bytes)", format_bytes(free_bytes))
+
+        free_blocks_col, used_blocks_col = st.columns(2)
+        free_blocks_col.metric("Free Blocks", free_blocks)
+        used_blocks_col.metric("Used Blocks", used_blocks)
+
+
+def render_memory_map(blocks: list[MemoryBlock]) -> None:
+    used_bytes = sum(block.size for block in blocks if not block.free)
+
+    with st.container(border=True):
+        heading_col, total_col = st.columns([3, 1])
+        heading_col.subheader("Memory Blocks")
+        total_col.caption(f"{format_bytes(TOTAL_MEMORY)} bytes total")
+        st.progress(
+            used_bytes / TOTAL_MEMORY,
+            text=f"{format_bytes(used_bytes)} of {format_bytes(TOTAL_MEMORY)} bytes used",
+        )
+
+        for index, block in enumerate(blocks, start=1):
+            data_bytes = (
+                block.requested
+                if not block.free and block.requested is not None
+                else max(0, block.size - HEADER_BYTES)
+            )
+
+            with st.container(border=True):
+                block_col, address_col, header_col, data_col, action_col = st.columns(
+                    [1, 1, 1.5, 1.5, 1]
+                )
+                block_col.markdown(f"**Block #{index}**")
+                address_col.caption("Address")
+                address_col.code(to_hex(block.start))
+                header_col.caption("Header")
+                header_col.write(f"{format_bytes(block.size)} bytes")
+                data_col.caption("Data")
+                data_col.write(f"{format_bytes(data_bytes)} bytes")
+
+                if block.free:
+                    action_col.success("Available")
+                else:
+                    action_col.button(
+                        "Release",
+                        key=f"release_{block.block_id}",
+                        on_click=release_memory,
+                        args=(block.block_id,),
+                    )
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="Memory Allocation Visualizer",
+        layout="wide",
+    )
+    initialize_state()
+
+    st.title("Memory Allocation Visualizer")
+    controls_col, stats_col = st.columns(2, gap="medium")
+
+    with controls_col:
+        render_controls()
+
+    blocks: list[MemoryBlock] = st.session_state["blocks"]
+    with stats_col:
+        render_statistics(blocks)
+
+    render_memory_map(blocks)
+    st.caption("A visual model of contiguous memory allocation.")
+
+
+if __name__ == "__main__":
+    main()
